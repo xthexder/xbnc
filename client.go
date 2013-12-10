@@ -18,41 +18,33 @@ type IRCClient struct {
 	nick      string
 	login     string
 	ident     string
+	pass      string
 	servers   map[string]*IRCServer
 	serverIds map[string]int
 	nextId    chan int
 }
 
-func CreateClient(nick, login, ident string) *IRCClient {
+func CreateClient(nick, login, ident, pass string) *IRCClient {
 	read := make(chan *IRCMessage, 1000)
-	write := make(chan string, 1000)
+	write := make(chan string, 100000)
 	channels := make(map[string]*IRCChannel)
 	servers := make(map[string]*IRCServer)
 	serverIds := make(map[string]int)
-	nextId := make(chan int, 100)
-	for i := 1; i <= 100; i++ {
+	nextId := make(chan int, 1000)
+	for i := 1; i <= 1000; i++ {
 		nextId <- i
 	}
-	return &IRCClient{false, nil, read, write, channels, nick, login, ident, servers, serverIds, nextId}
+	return &IRCClient{false, nil, read, write, channels, nick, login, ident, pass, servers, serverIds, nextId}
 }
 
-func (client *IRCClient) handler() {
-	fmt.Printf("Got connection from %s\n", client.sock.RemoteAddr().String())
-
-	for client != nil && client.connected {
+func (client *IRCClient) Handler() {
+	for client.connected {
 		msg := <-client.read
 
 		if msg.command == "PING" {
 			client.write <- ":" + conf.Hostname + " PONG " + conf.Hostname + " :" + msg.param[0]
 		} else if msg.command == "USER" {
-			client.login = msg.param[0]
-			client.write <- ":" + conf.Hostname + " 001 " + client.nick + " :Welcome to XBNC " + client.nick + "!" + client.login + "@xbnc"
-			client.write <- ":" + conf.Hostname + " 002 " + client.nick + " :Your host is " + conf.Hostname + ", running version XBNC1.0"
-			client.write <- ":" + conf.Hostname + " 003 " + client.nick + " :This server was created Tomorrow"
-			client.write <- ":" + conf.Hostname + " 004 " + client.nick + " :" + conf.Hostname + " XBNC1.0 iowghraAsORTVSxNCWqBzvdHtGpI lvhopsmntikrRcaqOALQbSeIKVfMCuzNTGjZ"
-			client.write <- ":" + conf.Hostname + " 005 " + client.nick + " :CHANTYPES=# NETWORK=XBNC PREFIX=(qaohv)~&@%+ CASEMAPPING=ascii :are supported by this server"
-
-			client.write <- ":" + client.nick + "!" + client.login + "@xbnc JOIN :#xbnc"
+			client.write <- ":" + conf.Hostname + " 462 " + client.login + " :You may not reregister"
 		} else if msg.command == "PRIVMSG" && msg.param[0] == "#xbnc" {
 			client.handleXBNCCMD(msg.message)
 		} else if msg.command == "JOIN" {
@@ -80,11 +72,11 @@ func (client *IRCClient) handler() {
 				server, exists := client.servers[host]
 				if exists {
 					if len(channel) > 0 {
-						ch, exists := client.channels[channel]
+						ch, exists := client.channels[msg.param[0]]
 						if exists && ch.active {
 							server.write <- "PART " + channel + " :Leaving"
 						} else {
-							client.partChannel(channel)
+							client.partChannel(msg.param[0])
 						}
 					} else {
 						client.removeServer(host)
@@ -102,7 +94,9 @@ func (client *IRCClient) handler() {
 				server.handleServerCMD(msg.message)
 			}
 		} else if msg.command == "MODE" {
-			if strings.HasPrefix(msg.param[0], "#") {
+			if msg.param[0] == "#xbnc" {
+				client.write <- ":" + conf.Hostname + " 324 " + client.nick + " #xbnc +"
+			} else if strings.HasPrefix(msg.param[0], "#") {
 				host, channel := client.channelToHost(msg.param[0])
 				server, exists := client.servers[host]
 				if exists && len(channel) > 0 {
@@ -115,6 +109,8 @@ func (client *IRCClient) handler() {
 					} else {
 						server.write <- "MODE " + channel
 					}
+				} else if exists {
+					client.write <- ":" + conf.Hostname + " 324 " + client.nick + " " + msg.param[0] + " +"
 				} else {
 					client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 				}
@@ -122,7 +118,9 @@ func (client *IRCClient) handler() {
 				client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 			}
 		} else if msg.command == "WHO" {
-			if strings.HasPrefix(msg.param[0], "#") {
+			if msg.param[0] == "#xbnc" {
+				client.write <- ":" + conf.Hostname + " 315 " + client.nick + " " + msg.param[0] + " :End of /WHO list."
+			} else if strings.HasPrefix(msg.param[0], "#") {
 				host, channel := client.channelToHost(msg.param[0])
 				server, exists := client.servers[host]
 				if exists && len(channel) > 0 {
@@ -131,12 +129,17 @@ func (client *IRCClient) handler() {
 					} else {
 						server.write <- "WHO " + channel
 					}
+				} else if exists {
+					client.write <- ":" + conf.Hostname + " 315 " + client.nick + " " + msg.param[0] + " :End of /WHO list."
 				} else {
 					client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 				}
 			} else {
 				client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 			}
+		} else if msg.command == "QUIT" {
+			client.Close()
+			break
 		} else {
 			client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 		}
@@ -180,7 +183,7 @@ func (client *IRCClient) addServer(host, port string) *IRCServer {
 	if len(port) == 0 {
 		port = "6667"
 	}
-	srv, err := CreateServer(client, host, port, client.nick, client.login, "x8rx8r12")
+	srv, err := CreateServer(client, host, port, client.nick, client.login, client.ident)
 	if err != nil {
 		fmt.Println(err)
 		client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Error: " + err.Error()
@@ -252,7 +255,7 @@ func (client *IRCClient) hostToChannel(host, channel string) string {
 
 func (client *IRCClient) Close() {
 	client.connected = false
-	close(client.read)
-	close(client.write)
+	client.write <- ""
 	client.sock.Close()
+	client.sock = nil
 }
