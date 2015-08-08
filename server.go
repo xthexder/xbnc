@@ -115,87 +115,88 @@ func (srv *IRCServer) handler() {
 			continue
 		}
 
-		if msg.command == "PING" {
-			srv.write <- "PONG :" + msg.message
-		} else if msg.command == "REPLY" {
-			srv.handleReplyCode(msg)
-		} else if msg.command == "JOIN" {
-			if msg.source == srv.nick {
-				tmp, exists := srv.channels[msg.param[0]]
-				if exists {
-					tmp.active = true
+		switch msg.command {
+			case "PING":
+				srv.write <- "PONG :" + msg.message
+			case "REPLY":
+				srv.handleReplyCode(msg)
+			case "JOIN":
+				if msg.source == srv.nick {
+					tmp, exists := srv.channels[msg.param[0]]
+					if exists {
+						tmp.active = true
+					} else {
+						srv.channels[msg.message] = &IRCChannel{msg.message, true}
+					}
+					srv.client.joinChannel(srv.client.hostToChannel(srv.host, msg.message), true)
 				} else {
-					srv.channels[msg.message] = &IRCChannel{msg.message, true}
+					srv.client.write <- ":" + msg.fullsource + " JOIN :" + srv.client.hostToChannel(srv.host, msg.message)
 				}
-				srv.client.joinChannel(srv.client.hostToChannel(srv.host, msg.message), true)
-			} else {
-				srv.client.write <- ":" + msg.fullsource + " JOIN :" + srv.client.hostToChannel(srv.host, msg.message)
-			}
-		} else if msg.command == "PART" {
-			if msg.source == srv.nick {
-				_, exists := srv.channels[msg.param[0]]
-				if exists {
-					delete(srv.channels, msg.param[0])
+			case "PART":
+				if msg.source == srv.nick {
+					_, exists := srv.channels[msg.param[0]]
+					if exists {
+						delete(srv.channels, msg.param[0])
+					}
+					srv.client.partChannel(srv.client.hostToChannel(srv.host, msg.param[0]))
+				} else {
+					srv.client.write <- ":" + msg.fullsource + " PART " + srv.client.hostToChannel(srv.host, msg.param[0]) + " :" + msg.message
 				}
-				srv.client.partChannel(srv.client.hostToChannel(srv.host, msg.param[0]))
-			} else {
-				srv.client.write <- ":" + msg.fullsource + " PART " + srv.client.hostToChannel(srv.host, msg.param[0]) + " :" + msg.message
-			}
-		} else if msg.command == "KICK" {
-			if msg.param[1] == srv.nick {
-				channel, exists := srv.channels[msg.param[0]]
-				if exists && channel.active {
-					channel.active = false
-					go func(srv *IRCServer, name string) {
-						time.Sleep(3 * time.Second)
-						if srv.connected {
-							channel, exists := srv.channels[name]
-							if exists && !channel.active {
-								srv.write <- "JOIN " + channel.name
+			case "KICK":
+				if msg.param[1] == srv.nick {
+					channel, exists := srv.channels[msg.param[0]]
+					if exists && channel.active {
+						channel.active = false
+						go func(srv *IRCServer, name string) {
+							time.Sleep(3 * time.Second)
+							if srv.connected {
+								channel, exists := srv.channels[name]
+								if exists && !channel.active {
+									srv.write <- "JOIN " + channel.name
+								}
 							}
-						}
-					}(srv, channel.name)
+						}(srv, channel.name)
+					}
+					srv.client.kickChannel(srv.client.hostToChannel(srv.host, msg.param[0]), msg.message)
+				} else {
+					srv.client.write <- ":" + msg.fullsource + " KICK " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1] + " :" + msg.message
 				}
-				srv.client.kickChannel(srv.client.hostToChannel(srv.host, msg.param[0]), msg.message)
-			} else {
-				srv.client.write <- ":" + msg.fullsource + " KICK " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1] + " :" + msg.message
-			}
-		} else if msg.command == "QUIT" {
-			srv.client.write <- ":" + msg.fullsource + " QUIT :" + msg.message
-		} else if msg.command == "PRIVMSG" {
-			name := msg.param[0]
-			if name == srv.nick {
-				name = msg.source
-			}
-			channel := srv.client.hostToChannel(srv.host, name)
-			srv.client.joinChannel(channel, false)
-			srv.client.write <- ":" + msg.fullsource + " PRIVMSG " + channel + " :" + msg.message
-		} else if msg.command == "NOTICE" {
-			srv.client.write <- msg.raw
-			if len(srv.ident) > 0 && msg.source == "NickServ" && strings.HasPrefix(msg.message, "This nickname is registered and protected") {
-				srv.write <- "NICKSERV IDENTIFY " + srv.ident
-			}
-		} else if msg.command == "MODE" {
-			if msg.paramlen == 4 {
-				srv.client.write <- ":" + msg.fullsource + " MODE " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1] + " " + msg.param[2] + " " + msg.param[3]
-			} else if msg.paramlen == 3 {
-				srv.client.write <- ":" + msg.fullsource + " MODE " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1] + " " + msg.param[2]
-			} else if msg.paramlen == 2 {
-				srv.client.write <- ":" + msg.fullsource + " MODE " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1]
-			} else if msg.paramlen == 1 {
-				srv.client.write <- ":" + msg.fullsource + " MODE " + msg.param[0] + " :" + msg.message
-			} else {
-				srv.client.write <- ":-!xbnc@xbnc PRIVMSG " + srv.client.hostToChannel(srv.host, "") + " :" + msg.raw
-			}
-		} else if msg.command == "NICK" {
-			srv.client.write <- msg.raw
-		} else if msg.command == "TOPIC" {
-			srv.client.write <- ":" + msg.fullsource + " TOPIC " + srv.client.hostToChannel(srv.host, msg.param[0]) + " :" + msg.message
-		} else if msg.command == "CTCP_VERSION" {
-			srv.client.write <- ":" + msg.source + "!xbnc@xbnc PRIVMSG " + srv.client.hostToChannel(srv.host, "") + " :Received CTCP VERSION: " + msg.raw
-			srv.write <- "NOTICE " + msg.source + " :\x01XBNC 1.0: Created By xthexder\x01"
-		} else {
-			srv.client.write <- ":-!xbnc@xbnc PRIVMSG " + srv.client.hostToChannel(srv.host, "") + " :" + msg.raw
+			case "QUIT":
+				srv.client.write <- ":" + msg.fullsource + " QUIT :" + msg.message
+			case "PRIVMSG":
+				name := msg.param[0]
+				if name == srv.nick {
+					name = msg.source
+				}
+				channel := srv.client.hostToChannel(srv.host, name)
+				srv.client.joinChannel(channel, false)
+				srv.client.write <- ":" + msg.fullsource + " PRIVMSG " + channel + " :" + msg.message
+			case "NOTICE":
+				srv.client.write <- msg.raw
+				if len(srv.ident) > 0 && msg.source == "NickServ" && strings.HasPrefix(msg.message, "This nickname is registered and protected") {
+					srv.write <- "NICKSERV IDENTIFY " + srv.ident
+				}
+			case "MODE":
+				if msg.paramlen == 4 {
+					srv.client.write <- ":" + msg.fullsource + " MODE " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1] + " " + msg.param[2] + " " + msg.param[3]
+				} else if msg.paramlen == 3 {
+					srv.client.write <- ":" + msg.fullsource + " MODE " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1] + " " + msg.param[2]
+				} else if msg.paramlen == 2 {
+					srv.client.write <- ":" + msg.fullsource + " MODE " + srv.client.hostToChannel(srv.host, msg.param[0]) + " " + msg.param[1]
+				} else if msg.paramlen == 1 {
+					srv.client.write <- ":" + msg.fullsource + " MODE " + msg.param[0] + " :" + msg.message
+				} else {
+					srv.client.write <- ":-!xbnc@xbnc PRIVMSG " + srv.client.hostToChannel(srv.host, "") + " :" + msg.raw
+				}
+			case "NICK":
+				srv.client.write <- msg.raw
+			case "TOPIC":
+					srv.client.write <- ":" + msg.fullsource + " TOPIC " + srv.client.hostToChannel(srv.host, msg.param[0]) + " :" + msg.message
+			case "CTCP_VERSION":
+				srv.client.write <- ":" + msg.source + "!xbnc@xbnc PRIVMSG " + srv.client.hostToChannel(srv.host, "") + " :Received CTCP VERSION: " + msg.raw
+				srv.write <- "NOTICE " + msg.source + " :\x01XBNC 1.0: Created By xthexder\x01"
+			default:
+					srv.client.write <- ":-!xbnc@xbnc PRIVMSG " + srv.client.hostToChannel(srv.host, "") + " :" + msg.raw
 		}
 	}
 }

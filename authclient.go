@@ -112,30 +112,30 @@ func (client *AuthClient) Handler() {
 
 	for client.connected {
 		msg := <-client.read
-
-		if msg.command == "PING" {
-			client.write <- ":" + conf.Hostname + " PONG " + conf.Hostname + " :" + msg.param[0]
-		} else if msg.command == "USER" {
-			login = msg.param[0]
-			ircclient := AttemptLogin(login, pass)
-			if ircclient != nil {
-				client.client = ircclient
-				client.SuccessfulAuth()
+		switch msg.command {
+			case "PING":
+				client.write <- ":" + conf.Hostname + " PONG " + conf.Hostname + " :" + msg.param[0]
+			case "USER":
+				login = msg.param[0]
+				ircclient := AttemptLogin(login, pass)
+				if ircclient != nil {
+					client.client = ircclient
+					client.SuccessfulAuth()
+					break
+				} else {
+					client.write <- ":" + conf.Hostname + " NOTICE AUTH :*** Please login with your password. /quote PASS <password>"
+				}
+			case "PASS":
+				pass = msg.param[0]
+				ircclient := AttemptLogin(login, pass)
+				if ircclient != nil {
+					client.client = ircclient
+					client.SuccessfulAuth()
+					break
+				}
+			case "QUIT":
+				client.Close()
 				break
-			} else {
-				client.write <- ":" + conf.Hostname + " NOTICE AUTH :*** Please login with your password. /quote PASS <password>"
-			}
-		} else if msg.command == "PASS" {
-			pass = msg.param[0]
-			ircclient := AttemptLogin(login, pass)
-			if ircclient != nil {
-				client.client = ircclient
-				client.SuccessfulAuth()
-				break
-			}
-		} else if msg.command == "QUIT" {
-			client.Close()
-			break
 		}
 	}
 }
