@@ -41,108 +41,121 @@ func (client *IRCClient) Handler() {
 	for client.connected {
 		msg := <-client.read
 
-		if msg.command == "PING" {
-			client.write <- ":" + conf.Hostname + " PONG " + conf.Hostname + " :" + msg.param[0]
-		} else if msg.command == "USER" {
-			client.write <- ":" + conf.Hostname + " 462 " + client.login + " :You may not reregister"
-		} else if msg.command == "PRIVMSG" && msg.param[0] == "#xbnc" {
-			client.handleXBNCCMD(msg.message)
-		} else if msg.command == "JOIN" {
-			host, channel := client.channelToHost(msg.param[0])
-			if len(host) > 0 {
-				server := client.addServer(host, msg.param[1])
-				if server != nil {
-					if len(channel) > 0 {
-						server.write <- "JOIN " + channel
+		switch msg.command {
+
+			case "PING":
+				client.write <- ":" + conf.Hostname + " PONG " + conf.Hostname + " :" + msg.param[0]
+
+			case "USER":
+				client.write <- ":" + conf.Hostname + " 462 " + client.login + " :You may not reregister"
+
+			case "PRIVMSG":
+				if (msg.param[0] == "#xbnc") {
+					client.handleXBNCCMD(msg.message)
+				} else {
+					host, channel := client.channelToHost(msg.param[0])
+					server, exists := client.servers[host]
+					if exists && len(channel) > 0 {
+						server.write <- "PRIVMSG " + channel + " :" + msg.message
+					} else if exists {
+						server.handleServerCMD(msg.message)
+					}
+				}
+
+			case "JOIN":
+				host, channel := client.channelToHost(msg.param[0])
+				if len(host) > 0 {
+					server := client.addServer(host, msg.param[1])
+					if server != nil {
+						if len(channel) > 0 {
+							server.write <- "JOIN " + channel
+						} else {
+							client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Could not find channel to join: " + msg.param[0]
+						}
 					} else {
-						client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Could not find channel to join: " + msg.param[0]
+						client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Could not find server to join: " + msg.param[0]
 					}
 				} else {
 					client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Could not find server to join: " + msg.param[0]
 				}
-			} else {
-				client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Could not find server to join: " + msg.param[0]
-			}
-		} else if msg.command == "PART" {
-			if msg.param[0] == "#xbnc" {
-				client.write <- ":" + client.nick + "!" + client.login + "@xbnc JOIN :#xbnc"
-			} else {
-				host, channel := client.channelToHost(msg.param[0])
 
-				server, exists := client.servers[host]
-				if exists {
-					if len(channel) > 0 {
-						ch, exists := client.channels[msg.param[0]]
-						if exists && ch.active {
-							server.write <- "PART " + channel + " :Leaving"
-						} else {
-							client.partChannel(msg.param[0])
-						}
-					} else {
-						client.removeServer(host)
-					}
+			case "PART":
+				if msg.param[0] == "#xbnc" {
+					client.write <- ":" + client.nick + "!" + client.login + "@xbnc JOIN :#xbnc"
 				} else {
-					client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Could not find server to part: " + msg.param[0]
-				}
-			}
-		} else if msg.command == "PRIVMSG" {
-			host, channel := client.channelToHost(msg.param[0])
-			server, exists := client.servers[host]
-			if exists && len(channel) > 0 {
-				server.write <- "PRIVMSG " + channel + " :" + msg.message
-			} else if exists {
-				server.handleServerCMD(msg.message)
-			}
-		} else if msg.command == "MODE" {
-			if msg.param[0] == "#xbnc" {
-				client.write <- ":" + conf.Hostname + " 324 " + client.nick + " #xbnc +"
-			} else if strings.HasPrefix(msg.param[0], "#") {
-				host, channel := client.channelToHost(msg.param[0])
-				server, exists := client.servers[host]
-				if exists && len(channel) > 0 {
-					if len(msg.param[1]) > 0 {
-						if len(msg.param[2]) > 0 {
-							server.write <- "MODE " + channel + " " + msg.param[1] + " " + msg.param[2]
+					host, channel := client.channelToHost(msg.param[0])
+
+					server, exists := client.servers[host]
+					if exists {
+						if len(channel) > 0 {
+							ch, exists := client.channels[msg.param[0]]
+							if exists && ch.active {
+								server.write <- "PART " + channel + " :Leaving"
+							} else {
+								client.partChannel(msg.param[0])
+							}
 						} else {
-							server.write <- "MODE " + channel + " " + msg.param[1]
+							client.removeServer(host)
 						}
 					} else {
-						server.write <- "MODE " + channel
+						client.write <- ":-!xbnc@xbnc PRIVMSG #xbnc :Could not find server to part: " + msg.param[0]
 					}
-				} else if exists {
-					client.write <- ":" + conf.Hostname + " 324 " + client.nick + " " + msg.param[0] + " +"
+				}
+
+			case "MODE":
+				if msg.param[0] == "#xbnc" {
+					client.write <- ":" + conf.Hostname + " 324 " + client.nick + " #xbnc +"
+				} else if strings.HasPrefix(msg.param[0], "#") {
+					host, channel := client.channelToHost(msg.param[0])
+					server, exists := client.servers[host]
+					if exists && len(channel) > 0 {
+						if len(msg.param[1]) > 0 {
+							if len(msg.param[2]) > 0 {
+								server.write <- "MODE " + channel + " " + msg.param[1] + " " + msg.param[2]
+							} else {
+								server.write <- "MODE " + channel + " " + msg.param[1]
+							}
+						} else {
+							server.write <- "MODE " + channel
+						}
+					} else if exists {
+						client.write <- ":" + conf.Hostname + " 324 " + client.nick + " " + msg.param[0] + " +"
+					} else {
+						client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
+					}
 				} else {
 					client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 				}
-			} else {
-				client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
-			}
-		} else if msg.command == "WHO" {
-			if msg.param[0] == "#xbnc" {
-				client.write <- ":" + conf.Hostname + " 315 " + client.nick + " " + msg.param[0] + " :End of /WHO list."
-			} else if strings.HasPrefix(msg.param[0], "#") {
-				host, channel := client.channelToHost(msg.param[0])
-				server, exists := client.servers[host]
-				if exists && len(channel) > 0 {
-					if len(msg.param[1]) > 0 {
-						server.write <- "WHO " + channel + " " + msg.param[1]
-					} else {
-						server.write <- "WHO " + channel
-					}
-				} else if exists {
+
+			case "WHO":
+				if msg.param[0] == "#xbnc" {
 					client.write <- ":" + conf.Hostname + " 315 " + client.nick + " " + msg.param[0] + " :End of /WHO list."
+				} else if strings.HasPrefix(msg.param[0], "#") {
+					host, channel := client.channelToHost(msg.param[0])
+					server, exists := client.servers[host]
+					if exists && len(channel) > 0 {
+						if len(msg.param[1]) > 0 {
+							server.write <- "WHO " + channel + " " + msg.param[1]
+						} else {
+							server.write <- "WHO " + channel
+						}
+					} else if exists {
+						client.write <- ":" + conf.Hostname + " 315 " + client.nick + " " + msg.param[0] + " :End of /WHO list."
+					} else {
+						client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
+					}
 				} else {
 					client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 				}
-			} else {
+
+			case "QUIT":
+				client.Close()
+				break
+
+			default:
 				client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
-			}
-		} else if msg.command == "QUIT" {
-			client.Close()
-			break
-		} else {
-			client.write <- ":client!xbnc@xbnc PRIVMSG #xbnc :" + msg.raw
 		}
+
 	}
 }
 
